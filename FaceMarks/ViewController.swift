@@ -10,7 +10,7 @@ class ViewController: UIViewController, FrameExtractorDelegate {
     var frameExtractor: FrameExtractor!
     
     @IBOutlet weak var imageView: UIImageView!
-    
+        
     @IBAction func flipButton(_ sender: UIButton) {
         frameExtractor.flipCamera()
     }
@@ -26,4 +26,3 @@ class ViewController: UIViewController, FrameExtractorDelegate {
     }
     
 }
-
