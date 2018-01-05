@@ -25,8 +25,37 @@ class FrameExtractor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     weak var delegate: FrameExtractorDelegate?
     
     var marks: MLMultiArray!
+    var facebox: CGRect!
     
     /// Vision and CoreML
+    // TODO: return facebox
+    func updateFacebox(from ciImage: CIImage) {
+        let orientation = CGImagePropertyOrientation(rawValue: 1)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let handler = VNImageRequestHandler(ciImage: ciImage, orientation: orientation!)
+            do {
+                try handler.perform([self.faceRequest])
+            } catch {
+                print("Failed to perform face detection.\n\(error.localizedDescription)")
+            }
+        }
+    }
+    
+    // Make a face detection request object.
+    lazy var faceRequest = VNDetectFaceRectanglesRequest(completionHandler: self.processFacebox)
+    
+    func processFacebox(for request: VNRequest, error: Error?) {
+        guard let observations = request.results as? [VNFaceObservation]
+            else { fatalError("unexpected result type from VNCoreMLRequest") }
+        guard let face = observations.first
+            else {return}
+        let w = face.boundingBox.size.width
+        let h = face.boundingBox.size.height
+        let x = face.boundingBox.origin.x
+        let y = face.boundingBox.origin.y
+        self.facebox = CGRect(x: x, y: y, width: w, height: h)
+    }
+    
     // - Tag: MLModelSetup, make a request object.
     lazy var landmarkRequest: VNCoreMLRequest = {
         do {
@@ -38,14 +67,14 @@ class FrameExtractor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             let request = VNCoreMLRequest(model: model, completionHandler: { [weak self] request, error in
                 self?.processLandmarks(for: request, error: error)
             })
-            request.imageCropAndScaleOption = .centerCrop
+//            request.imageCropAndScaleOption = .scaleFill
             return request
         } catch {
             fatalError("Failed to load Vision ML model: \(error)")
         }
     }()
     
-    /// - Tag: PerformRequests
+    /// - Tag: Perform landmark requests
     func updateLandmarks(for ciImage: CIImage) {
         
         let orientation = CGImagePropertyOrientation(rawValue: 1)
@@ -60,27 +89,10 @@ class FrameExtractor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         }
     }
     
-    /// Updates the UI with the results of the classification.
-    /// - Tag: ProcessClassifications
+    /// Updates the marks with the results of the detection.
+    /// - Tag: processLandmarks
     func processLandmarks(for request: VNRequest, error: Error?) {
         DispatchQueue.main.async {
-            /*
-            guard let results = request.results else {
-                fatalError("Unable to process image.")
-            }
-            
-            // The `results` will always be `VNCoreMLFeatureValueObservation`s, as specified by the Core ML model in this project.
-            let observations = results as! [VNCoreMLFeatureValueObservation]
-            
-            if observations.isEmpty {
-                print("Nothing recognized.")
-            } else {
-                // MARKS GOT.
-                guard let faceMarks = observations.first?.featureValue.multiArrayValue
-                    else { fatalError("can't get best result") }
-                self.marks = faceMarks
-            }
-            */
             guard let observations = request.results as? [VNCoreMLFeatureValueObservation]
                 else { fatalError("unexpected result type from VNCoreMLRequest") }
             guard let faceMarks = observations.first?.featureValue.multiArrayValue
@@ -101,6 +113,7 @@ class FrameExtractor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         } catch {
             print("MulitiArray initialization failed.")
         }
+        facebox = CGRect(x: 0, y: 0, width: 360, height: 360)
         
         
     }
@@ -162,35 +175,60 @@ class FrameExtractor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             ($0 as AnyObject).position == position
             }.first
     }
-    
+
+
     // MARK: Sample buffer to UIImage conversion
     private func imageFromSampleBuffer(sampleBuffer: CMSampleBuffer) -> UIImage? {
         // Get image from buffer.
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil }
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return nil}
         let ciImage = CIImage(cvPixelBuffer: imageBuffer)
-        let imgCropped = ciImage.cropped(to: CGRect(x: 0, y: 0, width: 360, height: 360))
+        
+        // TODO: Try to get face box
+        /*
+        updateFacebox(from: ciImage)
+        let box = CGRect(x: self.facebox.origin.x * ciImage.extent.width,
+                         y: (self.facebox.origin.y) * ciImage.extent.height,
+                         width: self.facebox.width  * ciImage.extent.width,
+                         height: self.facebox.height * ciImage.extent.height)
+        */
+        let shiftX = 30
+        let shiftY = 90
+        let width = 300
+        let height = 300
+        let box = CGRect(x: shiftX, y: shiftY, width: width, height: height)
+        let imgCropped = ciImage.cropped(to: box)
         
         updateLandmarks(for: imgCropped)
         
-        // Try to draw the marks.
-        UIGraphicsBeginImageContextWithOptions(imgCropped.extent.size, true, 0)
-        let context = UIGraphicsGetCurrentContext()!
-        context.setLineWidth(5.0)
-        context.setStrokeColor(UIColor.green.cgColor)
-        let uiImage = UIImage(ciImage: imgCropped)
-        uiImage.draw(at: CGPoint(x: 0, y: 0))
+        let targetSize = ciImage.extent.size
         
-        context.beginPath()
+        // Setup a CGContext for drawing.
+        UIGraphicsBeginImageContextWithOptions(targetSize, true, 0)
+        let context = UIGraphicsGetCurrentContext()!
+        context.setLineWidth(3.0)
+        context.setStrokeColor(UIColor.white.cgColor)
+        context.setFillColor(UIColor.white.cgColor)
+
+        // Draw image
+        let uiImage = UIImage(ciImage: ciImage)
+        uiImage.draw(in: CGRect(x: 0, y: 0, width: targetSize.width, height: targetSize.height))
+        
+        // Draw marks
         for idx in 0...67 {
-            let x = CGFloat(truncating: self.marks[idx * 2]) * imgCropped.extent.width
-            let y = CGFloat(truncating: self.marks[idx * 2 + 1]) * imgCropped.extent.width
-            context.addEllipse(in: CGRect(x: x, y: y, width: 1, height: 1))
+            let x = CGFloat(truncating: self.marks[idx * 2]) * imgCropped.extent.width + CGFloat(shiftX)
+            let y = CGFloat(truncating: self.marks[idx * 2 + 1]) * imgCropped.extent.width + CGFloat(shiftY)
+            context.fillEllipse(in: CGRect(x: x, y: y, width: 3, height: 3))
         }
         
+        // Draw facebox
+        context.addRect(box)
+        context.setStrokeColor(UIColor.green.cgColor)
         context.strokePath()
+        
+        // Generate image.
         let resultImage = UIGraphicsGetImageFromCurrentImageContext()
         UIGraphicsEndImageContext()
-        return resultImage
+        return (resultImage)
     }
     
     // MARK: AVCaptureVideoDataOutputSampleBufferDelegate
